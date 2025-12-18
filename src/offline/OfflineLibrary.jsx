@@ -33,7 +33,7 @@ const OfflineLibrary = () => {
             const encrypted = await encryptData(file);
             await saveSong({
                 name: file.name,
-                type: file.type,
+                type: file.type || 'audio/mpeg',
                 size: file.size,
                 data: encrypted,
                 createdAt: Date.now()
@@ -87,6 +87,7 @@ const OfflineLibrary = () => {
         const all = await getAllSongs();
         for (const s of all) await deleteSong(s.id);
         setPlayingId(null);
+        if (audioUrl) URL.revokeObjectURL(audioUrl);
         setAudioUrl(null);
         await loadSongs();
     };
@@ -106,41 +107,39 @@ const OfflineLibrary = () => {
             const decryptedBuffer = await decryptData(song.data);
             const mimeType = song.type || 'audio/mpeg';
 
-            // Cria URL sem revogar a antiga imediatamente (evita ERR_FILE_NOT_FOUND)
-            const oldUrl = audioUrl;
+            // Cria um Blob e uma URL
+            const blob = new Blob([decryptedBuffer], { type: mimeType });
+            const url = URL.createObjectURL(blob);
 
-            // Tenta usar MediaSource
-            if ('MediaSource' in window && MediaSource.isTypeSupported(mimeType)) {
-                const ms = new MediaSource();
-                const url = URL.createObjectURL(ms);
-                setAudioUrl(url);
+            // Limpa URL anterior
+            if (audioUrl) URL.revokeObjectURL(audioUrl);
+            setAudioUrl(url);
 
-                ms.addEventListener('sourceopen', () => {
-                    const sb = ms.addSourceBuffer(mimeType);
-                    sb.appendBuffer(decryptedBuffer);
-                    sb.onupdateend = () => {
-                        if (ms.readyState === 'open') ms.endOfStream();
-                        if (oldUrl) URL.revokeObjectURL(oldUrl);
-                    };
-                }, { once: true });
-            } else {
-                // Fallback para Blob tradicional se MSE não suportar o codec
-                const blob = new Blob([decryptedBuffer], { type: mimeType });
-                const url = URL.createObjectURL(blob);
-                setAudioUrl(url);
-                if (oldUrl) setTimeout(() => URL.revokeObjectURL(oldUrl), 1000);
+            // Força o player a carregar
+            if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.src = url;
+                audioRef.current.load();
+
+                // Tenta tocar com tratamento de erro
+                const playPromise = audioRef.current.play();
+                if (playPromise !== undefined) {
+                    playPromise.then(() => setIsPlaying(true)).catch(e => {
+                        console.warn("Auto-play blocked, user interaction required", e);
+                    });
+                }
             }
 
             if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
                     title: song.name,
                     artist: 'Offline',
-                    album: 'Secure Player'
+                    album: 'Premium Player'
                 });
             }
         } catch (error) {
             console.error('Erro Play:', error);
-            alert('Erro ao carregar áudio.');
+            alert('Erro ao descriptografar ou tocar. Tente baixar novamente.');
         }
     };
 
@@ -148,6 +147,7 @@ const OfflineLibrary = () => {
         if (!confirm('Excluir?')) return;
         await deleteSong(id);
         if (playingId === id) {
+            if (audioUrl) URL.revokeObjectURL(audioUrl);
             setAudioUrl(null);
             setPlayingId(null);
         }
@@ -155,6 +155,7 @@ const OfflineLibrary = () => {
     };
 
     const formatSize = (bytes) => {
+        if (!bytes) return '0 B';
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
         return (bytes / Math.pow(1024, i)).toFixed(2) + ' ' + ['B', 'KB', 'MB', 'GB'][i];
     };
@@ -170,7 +171,7 @@ const OfflineLibrary = () => {
                         </button>
                         <input type="file" accept="audio/*" onChange={handleFileUpload} />
                     </div>
-                    <button className="btn-clear" onClick={clearLibrary}><Trash2 size={20} /></button>
+                    <button className="btn-clear" onClick={clearLibrary} title="Limpar Tudo"><Trash2 size={20} /></button>
                 </div>
                 <div className="divider-or">OU</div>
                 <div className="download-section">
@@ -206,30 +207,33 @@ const OfflineLibrary = () => {
                             <button onClick={() => handleDelete(song.id)} className="icon-button delete"><Trash2 size={16} /></button>
                         </div>
                     ))}
+                    {songs.length === 0 && (
+                        <div className="empty-state">
+                            <Music size={40} />
+                            <p>Sua galeria está vazia.</p>
+                        </div>
+                    )}
                 </div>
             </div>
 
-            {playingId && audioUrl && (
-                <div className="mini-player glass">
-                    <div className="player-info">
-                        <Music size={16} className={isPlaying ? "spinning" : ""} />
-                        <span>{isPlaying ? 'Tocando Offline' : 'Pausado'}</span>
-                    </div>
-                    <audio
-                        ref={audioRef}
-                        src={audioUrl}
-                        controls
-                        autoPlay
-                        className="web-audio-player"
-                        onPlay={() => setIsPlaying(true)}
-                        onPause={() => setIsPlaying(false)}
-                        onEnded={() => {
-                            setPlayingId(null);
-                            setIsPlaying(false);
-                        }}
-                    />
+            {/* Player sempre presente mas visível só quando tem música */}
+            <div className={`mini-player glass ${playingId ? 'visible' : 'hidden'}`} style={{ opacity: playingId ? 1 : 0, pointerEvents: playingId ? 'all' : 'none' }}>
+                <div className="player-info">
+                    <Music size={16} className={isPlaying ? "spinning" : ""} />
+                    <span>{isPlaying ? 'Tocando Offline' : 'Pausado'}</span>
                 </div>
-            )}
+                <audio
+                    ref={audioRef}
+                    controls
+                    className="web-audio-player"
+                    onPlay={() => setIsPlaying(true)}
+                    onPause={() => setIsPlaying(false)}
+                    onEnded={() => {
+                        setPlayingId(null);
+                        setIsPlaying(false);
+                    }}
+                />
+            </div>
         </div>
     );
 };
