@@ -111,38 +111,51 @@ const OfflineLibrary = () => {
                 return;
             }
 
-            // Inicia carregamento de nova música
             setPlayingId(song.id);
             setIsPlaying(false);
 
-            // Não revogar IMEDIATAMENTE para evitar erro de Range no Chrome
-            // O navegador pode precisar ler partes do blob antigo por uns ms
-            const oldUrl = audioUrl;
-
             const decryptedBuffer = await decryptData(song.data);
-            const audioBlob = new Blob([decryptedBuffer], { type: song.type || 'audio/mpeg' });
-            const url = URL.createObjectURL(audioBlob);
+            const mimeType = song.type || 'audio/mpeg';
+
+            if (audioUrl) {
+                URL.revokeObjectURL(audioUrl);
+            }
+
+            // MediaSource para evitar erro de Range Request
+            const ms = new MediaSource();
+            const url = URL.createObjectURL(ms);
 
             setAudioUrl(url);
 
-            if (audioRef.current) {
-                audioRef.current.pause();
-                audioRef.current.src = url;
-                audioRef.current.load();
+            ms.addEventListener('sourceopen', () => {
+                try {
+                    const sourceBuffer = ms.addSourceBuffer(mimeType);
+                    sourceBuffer.appendBuffer(decryptedBuffer);
 
-                const onCanPlay = async () => {
-                    try {
-                        await audioRef.current.play();
-                        setIsPlaying(true);
-                        // Revoga o antigo após iniciar o novo com sucesso
-                        if (oldUrl) URL.revokeObjectURL(oldUrl);
-                    } catch (e) {
-                        console.warn("Playback interrupted", e);
+                    sourceBuffer.addEventListener('updateend', () => {
+                        if (ms.readyState === 'open') {
+                            ms.endOfStream();
+                        }
+                        if (audioRef.current) {
+                            audioRef.current.play()
+                                .then(() => setIsPlaying(true))
+                                .catch(e => console.warn("MSE Playback Error:", e));
+                        }
+                    }, { once: true });
+                } catch (e) {
+                    console.error("MSE Error, fallback to Blob URL:", e);
+                    const blob = new Blob([decryptedBuffer], { type: mimeType });
+                    const blobUrl = URL.createObjectURL(blob);
+                    setAudioUrl(blobUrl);
+                    if (audioRef.current) {
+                        audioRef.current.src = blobUrl;
+                        audioRef.current.play().then(() => setIsPlaying(true));
                     }
-                    audioRef.current.removeEventListener('canplay', onCanPlay);
-                };
+                }
+            }, { once: true });
 
-                audioRef.current.addEventListener('canplay', onCanPlay);
+            if (audioRef.current) {
+                audioRef.current.src = url;
             }
 
             if ('mediaSession' in navigator) {
@@ -154,7 +167,7 @@ const OfflineLibrary = () => {
             }
         } catch (error) {
             console.error('Erro ao tocar música:', error);
-            alert('Erro ao carregar música. Tente baixar novamente.');
+            alert('Erro ao carregar áudio.');
             setPlayingId(null);
         }
     };
