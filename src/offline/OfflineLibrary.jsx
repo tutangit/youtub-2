@@ -54,7 +54,8 @@ const OfflineLibrary = () => {
         if (!ytUrl) return;
         setDownloading(true);
         try {
-            const response = await fetch(`http://localhost:3001/download?url=${encodeURIComponent(ytUrl)}`);
+            const RENDER_URL = 'https://youtub-2.onrender.com';
+            const response = await fetch(`${RENDER_URL}/download?url=${encodeURIComponent(ytUrl)}`);
             if (!response.ok) throw new Error('Download failed');
 
             const contentDisposition = response.headers.get('Content-Disposition');
