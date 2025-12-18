@@ -89,51 +89,54 @@ const OfflineLibrary = () => {
     };
 
     const playSong = async (song) => {
-        if (playingId === song.id) {
-            if (audioRef.current.paused) {
-                audioRef.current.play().catch(() => { }); // Ignora erro de interrupção
-            } else {
-                audioRef.current.pause();
-            }
-            return;
-        }
-
         try {
+            if (playingId === song.id) {
+                if (audioRef.current.paused) {
+                    await audioRef.current.play().catch(() => { });
+                } else {
+                    audioRef.current.pause();
+                }
+                return;
+            }
+
+            // Limpa recursos anteriores
             if (audioUrl) {
                 audioRef.current.pause();
+                audioRef.current.src = "";
+                audioRef.current.load();
                 URL.revokeObjectURL(audioUrl);
             }
 
-            const decryptedBlob = await decryptData(song.data);
-            // Garante que o blob tenha o tipo correto
-            const audioBlob = new Blob([decryptedBlob], { type: song.type || 'audio/mpeg' });
+            const decryptedData = await decryptData(song.data);
+            const audioBlob = new Blob([decryptedData], { type: song.type || 'audio/mpeg' });
             const url = URL.createObjectURL(audioBlob);
 
             setAudioUrl(url);
             setPlayingId(song.id);
 
-            // Pequeno delay para o React atualizar a URL no elemento <audio>
-            setTimeout(() => {
+            // Importante: Aguardar o próximo frame para garantir que o src foi atualizado
+            setTimeout(async () => {
                 if (audioRef.current) {
+                    audioRef.current.src = url;
                     audioRef.current.load();
-                    const playPromise = audioRef.current.play();
-                    if (playPromise !== undefined) {
-                        playPromise.catch(e => console.log("Playback start quieted"));
+                    try {
+                        await audioRef.current.play();
+                    } catch (e) {
+                        console.warn("Auto-play bloqueado ou interrompido");
                     }
                 }
-            }, 100);
+            }, 50);
 
-            // Media Session API
             if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
                     title: song.name,
                     artist: 'Biblioteca Offline',
-                    album: 'Criptografado',
+                    album: 'Música Protegida',
                 });
             }
         } catch (error) {
-            console.error('Erro ao processar áudio:', error);
-            alert('Erro ao descriptografar para reprodução.');
+            console.error('Erro ao tocar música:', error);
+            alert('Erro técnico ao processar o arquivo. Tente baixar novamente.');
         }
     };
 

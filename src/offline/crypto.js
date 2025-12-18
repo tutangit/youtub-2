@@ -1,73 +1,56 @@
-const ALGORITHM = 'AES-GCM';
-const KEY_NAME = 'music_player_secret_key';
-
-/**
- * Generates or retrieves a persistent symmetric key for AES-GCM.
- * We store the key in IndexedDB for persistence across sessions, 
- * or as a simpler first step, we recreate it if lost (which would break old data).
- * For a production app, we'd use a master password or PBKDF2.
- */
-export async function getEncryptionKey() {
-    const storedKey = localStorage.getItem(KEY_NAME);
-    if (storedKey) {
-        const rawKey = Uint8Array.from(atob(storedKey), c => c.charCodeAt(0));
-        return await crypto.subtle.importKey(
-            'raw',
-            rawKey,
-            ALGORITHM,
+export const getEncryptionKey = async () => {
+    let keyData = localStorage.getItem('music_key');
+    if (!keyData) {
+        const key = await window.crypto.subtle.generateKey(
+            { name: "AES-GCM", length: 256 },
             true,
-            ['encrypt', 'decrypt']
+            ["encrypt", "decrypt"]
         );
+        const exported = await window.crypto.subtle.exportKey("jwk", key);
+        localStorage.setItem('music_key', JSON.stringify(exported));
+        return key;
     }
-
-    const key = await crypto.subtle.generateKey(
-        { name: ALGORITHM, length: 256 },
+    return await window.crypto.subtle.importKey(
+        "jwk",
+        JSON.parse(keyData),
+        { name: "AES-GCM" },
         true,
-        ['encrypt', 'decrypt']
+        ["encrypt", "decrypt"]
     );
+};
 
-    const exportedKey = await crypto.subtle.exportKey('raw', key);
-    const base64Key = btoa(String.fromCharCode(...new Uint8Array(exportedKey)));
-    localStorage.setItem(KEY_NAME, base64Key);
-
-    return key;
-}
-
-/**
- * Encrypts a File/Blob using AES-GCM.
- */
-export async function encryptData(data) {
+export const encryptData = async (data) => {
     const key = await getEncryptionKey();
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encodedContent = await data.arrayBuffer();
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
 
-    const encryptedContent = await crypto.subtle.encrypt(
-        { name: ALGORITHM, iv },
+    // Suporta tanto ArrayBuffer quanto Uint8Array
+    const dataToEncrypt = data instanceof Uint8Array ? data : new Uint8Array(data);
+
+    const encryptedContent = await window.crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
         key,
-        encodedContent
+        dataToEncrypt
     );
 
-    // Combine IV and Encrypted Content
-    const combined = new Uint8Array(iv.length + encryptedContent.byteLength);
-    combined.set(iv);
-    combined.set(new Uint8Array(encryptedContent), iv.length);
+    // Retorna um objeto com os buffers originais (mais eficiente)
+    return {
+        iv: iv,
+        encryptedData: new Uint8Array(encryptedContent)
+    };
+};
 
-    return combined;
-}
-
-/**
- * Decrypts a combined ArrayBuffer (IV + EncryptedContent) using AES-GCM.
- */
-export async function decryptData(combinedArray) {
+export const decryptData = async (encryptedObj) => {
     const key = await getEncryptionKey();
-    const iv = combinedArray.slice(0, 12);
-    const encryptedContent = combinedArray.slice(12);
 
-    const decryptedContent = await crypto.subtle.decrypt(
-        { name: ALGORITHM, iv },
+    // Reconverte para os tipos corretos caso venham do IndexedDB
+    const iv = encryptedObj.iv instanceof Uint8Array ? encryptedObj.iv : new Uint8Array(encryptedObj.iv);
+    const data = encryptedObj.encryptedData instanceof Uint8Array ? encryptedObj.encryptedData : new Uint8Array(encryptedObj.encryptedData);
+
+    const decryptedContent = await window.crypto.subtle.decrypt(
+        { name: "AES-GCM", iv },
         key,
-        encryptedContent
+        data
     );
 
-    return new Blob([decryptedContent], { type: 'audio/mpeg' });
-}
+    return new Uint8Array(decryptedContent);
+};
