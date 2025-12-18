@@ -23,12 +23,13 @@ export const encryptData = async (data) => {
     const key = await getEncryptionKey();
     const iv = window.crypto.getRandomValues(new Uint8Array(12));
 
-    // Converte para ArrayBuffer se for Blob ou outro tipo
     let buffer;
     if (data instanceof Blob) {
         buffer = await data.arrayBuffer();
     } else if (data instanceof ArrayBuffer) {
         buffer = data;
+    } else if (data.buffer instanceof ArrayBuffer) {
+        buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
     } else {
         buffer = new Uint8Array(data).buffer;
     }
@@ -48,15 +49,16 @@ export const encryptData = async (data) => {
 export const decryptData = async (encryptedObj) => {
     const key = await getEncryptionKey();
 
-    // Garante que são Uint8Arrays (importante para o IndexedDB)
+    // Extrai os dados garantindo que são Uint8Arrays independentes
     const iv = encryptedObj.iv instanceof Uint8Array ? encryptedObj.iv : new Uint8Array(Object.values(encryptedObj.iv));
-    const data = encryptedObj.encryptedData instanceof Uint8Array ? encryptedObj.encryptedData : new Uint8Array(Object.values(encryptedObj.encryptedData));
+    const encryptedData = encryptedObj.encryptedData instanceof Uint8Array ? encryptedObj.encryptedData : new Uint8Array(Object.values(encryptedObj.encryptedData));
 
+    // Decripta usando o buffer exato
     const decryptedContent = await window.crypto.subtle.decrypt(
         { name: "AES-GCM", iv },
         key,
-        data.buffer
+        encryptedData.buffer.slice(encryptedData.byteOffset, encryptedData.byteOffset + encryptedData.byteLength)
     );
 
-    return decryptedContent; // Retorna o ArrayBuffer puro
+    return decryptedContent;
 };

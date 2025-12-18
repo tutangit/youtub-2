@@ -96,38 +96,53 @@ const OfflineLibrary = () => {
         setPlayingId(null);
     };
 
+    const [isPlaying, setIsPlaying] = useState(false);
+
     const playSong = async (song) => {
         try {
             if (playingId === song.id && audioRef.current) {
                 if (audioRef.current.paused) {
                     await audioRef.current.play().catch(() => { });
+                    setIsPlaying(true);
                 } else {
                     audioRef.current.pause();
+                    setIsPlaying(false);
                 }
                 return;
             }
 
-            if (audioUrl) {
-                audioRef.current.pause();
-                URL.revokeObjectURL(audioUrl);
-            }
+            // Inicia carregamento de nova música
+            setPlayingId(song.id);
+            setIsPlaying(false);
+
+            // Não revogar IMEDIATAMENTE para evitar erro de Range no Chrome
+            // O navegador pode precisar ler partes do blob antigo por uns ms
+            const oldUrl = audioUrl;
 
             const decryptedBuffer = await decryptData(song.data);
             const audioBlob = new Blob([decryptedBuffer], { type: song.type || 'audio/mpeg' });
             const url = URL.createObjectURL(audioBlob);
 
             setAudioUrl(url);
-            setPlayingId(song.id);
 
-            // Reseta e toca o áudio
             if (audioRef.current) {
                 audioRef.current.pause();
                 audioRef.current.src = url;
                 audioRef.current.load();
-                audioRef.current.oncanplay = async () => {
-                    await audioRef.current.play().catch(e => console.warn(e));
-                    audioRef.current.oncanplay = null;
+
+                const onCanPlay = async () => {
+                    try {
+                        await audioRef.current.play();
+                        setIsPlaying(true);
+                        // Revoga o antigo após iniciar o novo com sucesso
+                        if (oldUrl) URL.revokeObjectURL(oldUrl);
+                    } catch (e) {
+                        console.warn("Playback interrupted", e);
+                    }
+                    audioRef.current.removeEventListener('canplay', onCanPlay);
                 };
+
+                audioRef.current.addEventListener('canplay', onCanPlay);
             }
 
             if ('mediaSession' in navigator) {
@@ -138,8 +153,9 @@ const OfflineLibrary = () => {
                 });
             }
         } catch (error) {
-            console.error(error);
-            alert('Erro ao tocar música. Tente baixar novamente.');
+            console.error('Erro ao tocar música:', error);
+            alert('Erro ao carregar música. Tente baixar novamente.');
+            setPlayingId(null);
         }
     };
 
@@ -207,7 +223,7 @@ const OfflineLibrary = () => {
                         <div key={song.id} className={`list-item ${playingId === song.id ? 'active' : ''}`}>
                             <div className="track-main-info" onClick={() => playSong(song)}>
                                 <div className="play-icon-wrap">
-                                    {playingId === song.id && !audioRef.current?.paused ? <Pause size={18} /> : <Play size={18} />}
+                                    {playingId === song.id && isPlaying ? <Pause size={18} /> : <Play size={18} />}
                                 </div>
                                 <div className="track-details">
                                     <span className="track-name">{song.name}</span>
@@ -228,13 +244,24 @@ const OfflineLibrary = () => {
                 </div>
             </div>
 
-            {audioUrl && (
+            {playingId && audioUrl && (
                 <div className="mini-player glass">
                     <div className="player-info">
-                        <Music size={16} className="spinning" />
-                        <span>Tocando Offline</span>
+                        <Music size={16} className={isPlaying ? "spinning" : ""} />
+                        <span>{isPlaying ? 'Tocando Offline' : 'Pausado'}</span>
                     </div>
-                    <audio src={audioUrl} controls autoPlay ref={null} className="web-audio-player" onEnded={() => setPlayingId(null)} />
+                    <audio
+                        src={audioUrl}
+                        controls
+                        autoPlay
+                        className="web-audio-player"
+                        onPlay={() => setIsPlaying(true)}
+                        onPause={() => setIsPlaying(false)}
+                        onEnded={() => {
+                            setPlayingId(null);
+                            setIsPlaying(false);
+                        }}
+                    />
                 </div>
             )}
         </div>
