@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Trash2, Play, Pause, Lock, Music, Download } from 'lucide-react';
+import { Upload, Trash2, Play, Pause, Library, Music, Download } from 'lucide-react';
 import { saveSong, getAllSongs, deleteSong } from './db';
-import { encryptData, decryptData } from './crypto';
 
 const OfflineLibrary = () => {
     const [songs, setSongs] = useState([]);
@@ -30,12 +29,11 @@ const OfflineLibrary = () => {
         if (!file) return;
         setUploading(true);
         try {
-            const encrypted = await encryptData(file);
             await saveSong({
                 name: file.name,
                 type: file.type || 'audio/mpeg',
                 size: file.size,
-                data: encrypted,
+                data: file, // Salva o arquivo diretamente (Blob)
                 createdAt: Date.now()
             });
             await loadSongs();
@@ -63,12 +61,11 @@ const OfflineLibrary = () => {
             }
 
             const blob = await response.blob();
-            const encrypted = await encryptData(blob);
             await saveSong({
                 name: filename,
                 type: 'audio/mpeg',
                 size: blob.size,
-                data: encrypted,
+                data: blob, // Salva o blob diretamente
                 createdAt: Date.now()
             });
             await loadSongs();
@@ -104,12 +101,8 @@ const OfflineLibrary = () => {
             setPlayingId(song.id);
             setIsPlaying(false);
 
-            const decryptedBuffer = await decryptData(song.data);
-            const mimeType = song.type || 'audio/mpeg';
-
-            // Cria um Blob e uma URL
-            const blob = new Blob([decryptedBuffer], { type: mimeType });
-            const url = URL.createObjectURL(blob);
+            // Cria uma URL diretamente do dado salvo
+            const url = URL.createObjectURL(song.data);
 
             // Limpa URL anterior
             if (audioUrl) URL.revokeObjectURL(audioUrl);
@@ -121,11 +114,10 @@ const OfflineLibrary = () => {
                 audioRef.current.src = url;
                 audioRef.current.load();
 
-                // Tenta tocar com tratamento de erro
                 const playPromise = audioRef.current.play();
                 if (playPromise !== undefined) {
                     playPromise.then(() => setIsPlaying(true)).catch(e => {
-                        console.warn("Auto-play blocked, user interaction required", e);
+                        console.warn("Playback blocked", e);
                     });
                 }
             }
@@ -134,12 +126,12 @@ const OfflineLibrary = () => {
                 navigator.mediaSession.metadata = new MediaMetadata({
                     title: song.name,
                     artist: 'Offline',
-                    album: 'Premium Player'
+                    album: 'Biblioteca'
                 });
             }
         } catch (error) {
             console.error('Erro Play:', error);
-            alert('Erro ao descriptografar ou tocar. Tente baixar novamente.');
+            alert('Erro ao tocar a música.');
         }
     };
 
@@ -167,7 +159,7 @@ const OfflineLibrary = () => {
                     <div className="file-input-wrapper">
                         <button className="btn-upload" disabled={uploading || downloading}>
                             {uploading ? <span className="spinner-small"></span> : <Upload size={20} />}
-                            <span>{uploading ? 'Segurando...' : 'Upload Local'}</span>
+                            <span>{uploading ? 'Carregando...' : 'Upload Local'}</span>
                         </button>
                         <input type="file" accept="audio/*" onChange={handleFileUpload} />
                     </div>
@@ -191,7 +183,7 @@ const OfflineLibrary = () => {
             </div>
 
             <div className="library-section">
-                <h3 className="section-title"><Lock size={18} /> Sua Biblioteca Offline</h3>
+                <h3 className="section-title"><Library size={18} /> Sua Biblioteca Offline</h3>
                 <div className="scrollable-list">
                     {songs.map(song => (
                         <div key={song.id} className={`list-item ${playingId === song.id ? 'active' : ''}`}>
@@ -201,7 +193,7 @@ const OfflineLibrary = () => {
                                 </div>
                                 <div className="track-details">
                                     <span className="track-name">{song.name}</span>
-                                    <span className="track-meta">{formatSize(song.size)} • AES-GCM</span>
+                                    <span className="track-meta">{formatSize(song.size)} • Áudio Local</span>
                                 </div>
                             </div>
                             <button onClick={() => handleDelete(song.id)} className="icon-button delete"><Trash2 size={16} /></button>
@@ -210,14 +202,13 @@ const OfflineLibrary = () => {
                     {songs.length === 0 && (
                         <div className="empty-state">
                             <Music size={40} />
-                            <p>Sua galeria está vazia.</p>
+                            <p>Sua biblioteca está vazia.</p>
                         </div>
                     )}
                 </div>
             </div>
 
-            {/* Player sempre presente mas visível só quando tem música */}
-            <div className={`mini-player glass ${playingId ? 'visible' : 'hidden'}`} style={{ opacity: playingId ? 1 : 0, pointerEvents: playingId ? 'all' : 'none' }}>
+            <div className={`mini-player glass ${playingId ? 'visible' : 'hidden'}`}>
                 <div className="player-info">
                     <Music size={16} className={isPlaying ? "spinning" : ""} />
                     <span>{isPlaying ? 'Tocando Offline' : 'Pausado'}</span>
