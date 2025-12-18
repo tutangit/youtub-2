@@ -29,11 +29,13 @@ const OfflineLibrary = () => {
         if (!file) return;
         setUploading(true);
         try {
+            // Converte para ArrayBuffer antes de salvar (mais estável no IndexedDB)
+            const buffer = await file.arrayBuffer();
             await saveSong({
                 name: file.name,
                 type: file.type || 'audio/mpeg',
                 size: file.size,
-                data: file, // Salva o arquivo diretamente (Blob)
+                data: buffer,
                 createdAt: Date.now()
             });
             await loadSongs();
@@ -61,11 +63,13 @@ const OfflineLibrary = () => {
             }
 
             const blob = await response.blob();
+            const buffer = await blob.arrayBuffer();
+
             await saveSong({
                 name: filename,
                 type: 'audio/mpeg',
                 size: blob.size,
-                data: blob, // Salva o blob diretamente
+                data: buffer,
                 createdAt: Date.now()
             });
             await loadSongs();
@@ -83,66 +87,53 @@ const OfflineLibrary = () => {
         if (!confirm('Limpar biblioteca?')) return;
         const all = await getAllSongs();
         for (const s of all) await deleteSong(s.id);
-        setPlayingId(null);
+        stopAudio();
+        await loadSongs();
+    };
+
+    const stopAudio = () => {
+        if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.src = "";
+        }
         if (audioUrl) URL.revokeObjectURL(audioUrl);
         setAudioUrl(null);
-        await loadSongs();
+        setPlayingId(null);
+        setIsPlaying(false);
     };
 
     const playSong = async (song) => {
         try {
             if (playingId === song.id && audioRef.current) {
-                if (audioRef.current.paused) audioRef.current.play();
+                if (audioRef.current.paused) audioRef.current.play().catch(() => { });
                 else audioRef.current.pause();
                 return;
             }
 
-            // Inicia nova música
+            // Para o que está tocando
+            if (audioUrl) URL.revokeObjectURL(audioUrl);
+
+            // Recria o Blob a partir do ArrayBuffer
+            // MUITO IMPORTANTE: Garante que o tipo seja áudio para o navegador não rejeitar
+            const blob = new Blob([song.data], { type: song.type || 'audio/mpeg' });
+            const url = URL.createObjectURL(blob);
+
+            setAudioUrl(url);
             setPlayingId(song.id);
             setIsPlaying(false);
 
-            // Cria uma URL diretamente do dado salvo
-            const url = URL.createObjectURL(song.data);
-
-            // Limpa URL anterior
-            if (audioUrl) URL.revokeObjectURL(audioUrl);
-            setAudioUrl(url);
-
-            // Força o player a carregar
-            if (audioRef.current) {
-                audioRef.current.pause();
-                audioRef.current.src = url;
-                audioRef.current.load();
-
-                const playPromise = audioRef.current.play();
-                if (playPromise !== undefined) {
-                    playPromise.then(() => setIsPlaying(true)).catch(e => {
-                        console.warn("Playback blocked", e);
-                    });
-                }
-            }
-
-            if ('mediaSession' in navigator) {
-                navigator.mediaSession.metadata = new MediaMetadata({
-                    title: song.name,
-                    artist: 'Offline',
-                    album: 'Biblioteca'
-                });
-            }
+            // Deixa o React atualizar o <audio src={audioUrl}>
+            // O autoPlay vai cuidar do resto.
         } catch (error) {
             console.error('Erro Play:', error);
-            alert('Erro ao tocar a música.');
+            alert('Erro ao carregar áudio.');
         }
     };
 
     const handleDelete = async (id) => {
         if (!confirm('Excluir?')) return;
+        if (playingId === id) stopAudio();
         await deleteSong(id);
-        if (playingId === id) {
-            if (audioUrl) URL.revokeObjectURL(audioUrl);
-            setAudioUrl(null);
-            setPlayingId(null);
-        }
         await loadSongs();
     };
 
@@ -159,7 +150,7 @@ const OfflineLibrary = () => {
                     <div className="file-input-wrapper">
                         <button className="btn-upload" disabled={uploading || downloading}>
                             {uploading ? <span className="spinner-small"></span> : <Upload size={20} />}
-                            <span>{uploading ? 'Carregando...' : 'Upload Local'}</span>
+                            <span>{uploading ? 'Processando...' : 'Upload Local'}</span>
                         </button>
                         <input type="file" accept="audio/*" onChange={handleFileUpload} />
                     </div>
@@ -193,16 +184,16 @@ const OfflineLibrary = () => {
                                 </div>
                                 <div className="track-details">
                                     <span className="track-name">{song.name}</span>
-                                    <span className="track-meta">{formatSize(song.size)} • Áudio Local</span>
+                                    <span className="track-meta">{formatSize(song.size)} • Áudio Salvo</span>
                                 </div>
                             </div>
-                            <button onClick={() => handleDelete(song.id)} className="icon-button delete"><Trash2 size={16} /></button>
+                            <button onClick={() => handleDelete(song.id)} className="icon-button delete" title="Remover"><Trash2 size={16} /></button>
                         </div>
                     ))}
                     {songs.length === 0 && (
                         <div className="empty-state">
                             <Music size={40} />
-                            <p>Sua biblioteca está vazia.</p>
+                            <p>Biblioteca vazia.</p>
                         </div>
                     )}
                 </div>
@@ -215,13 +206,16 @@ const OfflineLibrary = () => {
                 </div>
                 <audio
                     ref={audioRef}
+                    src={audioUrl}
                     controls
+                    autoPlay
                     className="web-audio-player"
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
-                    onEnded={() => {
-                        setPlayingId(null);
-                        setIsPlaying(false);
+                    onEnded={() => stopAudio()}
+                    onError={(e) => {
+                        console.error("Erro no elemento de áudio:", e);
+                        if (playingId) alert("Erro ao reproduzir este arquivo. Ele pode estar corrompido.");
                     }}
                 />
             </div>
