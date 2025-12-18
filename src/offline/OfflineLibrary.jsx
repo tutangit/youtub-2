@@ -91,7 +91,7 @@ const OfflineLibrary = () => {
     const playSong = async (song) => {
         if (playingId === song.id) {
             if (audioRef.current.paused) {
-                audioRef.current.play();
+                audioRef.current.play().catch(() => { }); // Ignora erro de interrupção
             } else {
                 audioRef.current.pause();
             }
@@ -99,30 +99,41 @@ const OfflineLibrary = () => {
         }
 
         try {
-            if (audioUrl) URL.revokeObjectURL(audioUrl);
+            if (audioUrl) {
+                audioRef.current.pause();
+                URL.revokeObjectURL(audioUrl);
+            }
 
             const decryptedBlob = await decryptData(song.data);
-            const url = URL.createObjectURL(decryptedBlob);
+            // Garante que o blob tenha o tipo correto
+            const audioBlob = new Blob([decryptedBlob], { type: song.type || 'audio/mpeg' });
+            const url = URL.createObjectURL(audioBlob);
 
             setAudioUrl(url);
             setPlayingId(song.id);
 
-            if (audioRef.current) {
-                audioRef.current.load();
-                audioRef.current.play();
-            }
+            // Pequeno delay para o React atualizar a URL no elemento <audio>
+            setTimeout(() => {
+                if (audioRef.current) {
+                    audioRef.current.load();
+                    const playPromise = audioRef.current.play();
+                    if (playPromise !== undefined) {
+                        playPromise.catch(e => console.log("Playback start quieted"));
+                    }
+                }
+            }, 100);
 
             // Media Session API
             if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
                     title: song.name,
-                    artist: 'Offline Library',
-                    album: 'Secured Music',
+                    artist: 'Biblioteca Offline',
+                    album: 'Criptografado',
                 });
             }
         } catch (error) {
-            console.error('Erro ao descriptografar:', error);
-            alert('Não foi possível reproduzir a música.');
+            console.error('Erro ao processar áudio:', error);
+            alert('Erro ao descriptografar para reprodução.');
         }
     };
 
