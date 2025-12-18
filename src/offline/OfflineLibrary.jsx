@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Trash2, Play, Pause, Music, Lock, Download, Search } from 'lucide-react';
+import { Upload, Trash2, Play, Pause, Lock, Music, Download } from 'lucide-react';
 import { saveSong, getAllSongs, deleteSong } from './db';
 import { encryptData, decryptData } from './crypto';
 
@@ -7,9 +7,9 @@ const OfflineLibrary = () => {
     const [songs, setSongs] = useState([]);
     const [uploading, setUploading] = useState(false);
     const [downloading, setDownloading] = useState(false);
-    const [ytUrl, setYtUrl] = useState('');
     const [playingId, setPlayingId] = useState(null);
     const [audioUrl, setAudioUrl] = useState(null);
+    const [ytUrl, setYtUrl] = useState('');
     const audioRef = useRef(null);
 
     useEffect(() => {
@@ -30,23 +30,21 @@ const OfflineLibrary = () => {
 
         setUploading(true);
         try {
-            const encryptedData = await encryptData(file);
-            const song = {
-                id: crypto.randomUUID(),
+            const encrypted = await encryptData(file);
+            await saveSong({
                 name: file.name,
                 type: file.type,
                 size: file.size,
-                data: encryptedData,
-                addedAt: Date.now(),
-            };
-            await saveSong(song);
+                data: encrypted,
+                createdAt: Date.now()
+            });
             await loadSongs();
+            alert('Música criptografada e salva com sucesso!');
         } catch (error) {
-            console.error('Erro ao criptografar/salvar arquivo:', error);
-            alert('Falha ao processar arquivo.');
+            console.error('Erro no upload:', error);
+            alert('Falha ao processar o arquivo.');
         } finally {
             setUploading(false);
-            if (e.target) e.target.value = '';
         }
     };
 
@@ -58,39 +56,49 @@ const OfflineLibrary = () => {
             const response = await fetch(`${RENDER_URL}/download?url=${encodeURIComponent(ytUrl)}`);
             if (!response.ok) throw new Error('Download failed');
 
-            const contentDisposition = response.headers.get('Content-Disposition');
-            let fileName = 'youtube-audio.mp3';
-            if (contentDisposition && contentDisposition.includes('filename=')) {
-                fileName = contentDisposition.split('filename=')[1].replace(/"/g, '');
+            const contentDispositionHeader = response.headers.get('Content-Disposition');
+            let filename = 'youtube-song.mp3';
+            if (contentDispositionHeader) {
+                const match = contentDispositionHeader.match(/filename="?(.+?)"?$/);
+                if (match) filename = decodeURIComponent(match[1]);
             }
 
             const blob = await response.blob();
-            const encryptedData = await encryptData(blob);
+            const encrypted = await encryptData(blob);
 
-            const song = {
-                id: crypto.randomUUID(),
-                name: fileName,
+            await saveSong({
+                name: filename,
                 type: 'audio/mpeg',
                 size: blob.size,
-                data: encryptedData,
-                addedAt: Date.now(),
-            };
+                data: encrypted,
+                createdAt: Date.now()
+            });
 
-            await saveSong(song);
             await loadSongs();
             setYtUrl('');
             alert('Música baixada e criptografada com sucesso!');
         } catch (error) {
             console.error('Erro no download:', error);
-            alert('Erro ao baixar música. Certifique-se que o backend está rodando.');
+            alert('Erro ao baixar música. Verifique o link e tente novamente.');
         } finally {
             setDownloading(false);
         }
     };
 
+    const clearLibrary = async () => {
+        if (!confirm('Deseja apagar todas as músicas?')) return;
+        const allSongs = await getAllSongs();
+        for (const s of allSongs) {
+            await deleteSong(s.id);
+        }
+        await loadSongs();
+        setAudioUrl(null);
+        setPlayingId(null);
+    };
+
     const playSong = async (song) => {
         try {
-            if (playingId === song.id) {
+            if (playingId === song.id && audioRef.current) {
                 if (audioRef.current.paused) {
                     await audioRef.current.play().catch(() => { });
                 } else {
@@ -99,87 +107,75 @@ const OfflineLibrary = () => {
                 return;
             }
 
-            // Limpa recursos anteriores
             if (audioUrl) {
                 audioRef.current.pause();
-                audioRef.current.src = "";
-                audioRef.current.load();
                 URL.revokeObjectURL(audioUrl);
             }
 
-            const decryptedData = await decryptData(song.data);
-            const audioBlob = new Blob([decryptedData], { type: song.type || 'audio/mpeg' });
+            const decryptedBuffer = await decryptData(song.data);
+            const audioBlob = new Blob([decryptedBuffer], { type: song.type || 'audio/mpeg' });
             const url = URL.createObjectURL(audioBlob);
 
             setAudioUrl(url);
             setPlayingId(song.id);
 
-            // Importante: Aguardar o próximo frame para garantir que o src foi atualizado
-            setTimeout(async () => {
-                if (audioRef.current) {
-                    audioRef.current.src = url;
-                    audioRef.current.load();
-                    try {
-                        await audioRef.current.play();
-                    } catch (e) {
-                        console.warn("Auto-play bloqueado ou interrompido");
-                    }
-                }
-            }, 50);
+            // Reseta e toca o áudio
+            if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.src = url;
+                audioRef.current.load();
+                audioRef.current.oncanplay = async () => {
+                    await audioRef.current.play().catch(e => console.warn(e));
+                    audioRef.current.oncanplay = null;
+                };
+            }
 
             if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
                     title: song.name,
-                    artist: 'Biblioteca Offline',
-                    album: 'Música Protegida',
+                    artist: 'Offline',
+                    album: 'Secured'
                 });
             }
         } catch (error) {
-            console.error('Erro ao tocar música:', error);
-            alert('Erro técnico ao processar o arquivo. Tente baixar novamente.');
+            console.error(error);
+            alert('Erro ao tocar música. Tente baixar novamente.');
         }
     };
 
     const handleDelete = async (id) => {
-        if (confirm('Tem certeza que deseja remover esta música?')) {
-            await deleteSong(id);
-            if (playingId === id) {
-                setPlayingId(null);
-                setAudioUrl(null);
-            }
-            await loadSongs();
+        if (!confirm('Excluir esta música?')) return;
+        await deleteSong(id);
+        if (playingId === id) {
+            audioRef.current.pause();
+            setAudioUrl(null);
+            setPlayingId(null);
         }
+        await loadSongs();
     };
 
     const formatSize = (bytes) => {
-        if (bytes === 0) return '0 Bytes';
+        if (bytes === 0) return '0 B';
         const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + ['B', 'KB', 'MB', 'GB'][i];
     };
 
     return (
         <div className="offline-library-container">
             <div className="offline-actions glass">
-                <div className="upload-section">
-                    <label className="upload-label">
-                        <input
-                            type="file"
-                            accept="audio/*"
-                            onChange={handleFileUpload}
-                            disabled={uploading || downloading}
-                            hidden
-                        />
-                        <div className="upload-button-content">
-                            {uploading ? (
-                                <div className="spinner"></div>
-                            ) : (
-                                <Upload size={24} />
-                            )}
-                            <span>{uploading ? 'Criptografando...' : 'Upload Local'}</span>
-                        </div>
-                    </label>
+                <div className="actions-header">
+                    <div className="file-input-wrapper">
+                        <button className="btn-upload" disabled={uploading || downloading}>
+                            {uploading ? <span className="spinner-small"></span> : <Upload size={20} />}
+                            <span>Upload Local</span>
+                        </button>
+                        <input type="file" accept="audio/*" onChange={handleFileUpload} />
+                    </div>
+
+                    <button className="btn-clear" onClick={clearLibrary} title="Limpar Tudo">
+                        <Trash2 size={20} />
+                    </button>
                 </div>
 
                 <div className="divider-or">OU</div>
@@ -188,78 +184,59 @@ const OfflineLibrary = () => {
                     <div className="input-group">
                         <input
                             type="text"
-                            placeholder="Link do YouTube para salvar offline"
+                            placeholder="Link do YouTube..."
                             value={ytUrl}
                             onChange={(e) => setYtUrl(e.target.value)}
-                            className="modern-input"
-                            disabled={uploading || downloading}
+                            disabled={downloading}
                         />
-                        <button
-                            onClick={handleYTDownload}
-                            className="icon-button primary"
-                            disabled={uploading || downloading || !ytUrl}
-                        >
-                            {downloading ? <div className="spinner small"></div> : <Download size={20} />}
+                        <button onClick={handleYTDownload} disabled={downloading || !ytUrl} className="btn-download">
+                            {downloading ? <span className="spinner-small"></span> : <Download size={20} />}
                         </button>
                     </div>
                 </div>
             </div>
 
-            <div className="playback-controls">
-                {audioUrl && (
-                    <div className="mini-player glass">
-                        <div className="player-info">
-                            <Music size={18} />
-                            <span>Agora tocando (Offline)</span>
-                        </div>
-                        <audio
-                            ref={audioRef}
-                            src={audioUrl}
-                            controls
-                            autoPlay
-                            onEnded={() => setPlayingId(null)}
-                            className="web-audio-player"
-                        />
-                    </div>
-                )}
-            </div>
+            <audio ref={audioRef} style={{ display: 'none' }} preload="auto" />
 
             <div className="library-section">
                 <h3 className="section-title">
-                    <Lock size={20} /> Biblioteca Criptografada
+                    <Lock size={18} /> Músicas Criptografadas
                 </h3>
                 <div className="scrollable-list">
-                    {songs.map((song) => (
-                        <div
-                            key={song.id}
-                            className={`list-item ${playingId === song.id ? 'active' : ''}`}
-                        >
+                    {songs.map(song => (
+                        <div key={song.id} className={`list-item ${playingId === song.id ? 'active' : ''}`}>
                             <div className="track-main-info" onClick={() => playSong(song)}>
                                 <div className="play-icon-wrap">
-                                    {playingId === song.id ? <Pause size={18} /> : <Play size={18} />}
+                                    {playingId === song.id && !audioRef.current?.paused ? <Pause size={18} /> : <Play size={18} />}
                                 </div>
                                 <div className="track-details">
                                     <span className="track-name">{song.name}</span>
-                                    <span className="track-meta">{formatSize(song.size)} • Secura AES-GCM</span>
+                                    <span className="track-meta">{formatSize(song.size)} • AES-GCM</span>
                                 </div>
                             </div>
-                            <button
-                                onClick={() => handleDelete(song.id)}
-                                className="icon-button delete"
-                                title="Remover permanentemente"
-                            >
+                            <button onClick={() => handleDelete(song.id)} className="icon-button delete">
                                 <Trash2 size={16} />
                             </button>
                         </div>
                     ))}
                     {songs.length === 0 && (
                         <div className="empty-state">
-                            <Music size={48} />
-                            <p>Nenhuma música offline encontrada.</p>
+                            <Music size={40} />
+                            <p>Biblioteca vazia</p>
                         </div>
                     )}
                 </div>
             </div>
+
+            {audioUrl && (
+                <div className="mini-player glass">
+                    <div className="player-info">
+                        <Music size={16} className="spinning" />
+                        <span>Tocando Offline</span>
+                    </div>
+                    <audio src={audioUrl} controls autoPlay ref={null} className="web-audio-player" onEnded={() => setPlayingId(null)} />
+                </div>
+            )}
         </div>
     );
 };

@@ -23,16 +23,22 @@ export const encryptData = async (data) => {
     const key = await getEncryptionKey();
     const iv = window.crypto.getRandomValues(new Uint8Array(12));
 
-    // Suporta tanto ArrayBuffer quanto Uint8Array
-    const dataToEncrypt = data instanceof Uint8Array ? data : new Uint8Array(data);
+    // Converte para ArrayBuffer se for Blob ou outro tipo
+    let buffer;
+    if (data instanceof Blob) {
+        buffer = await data.arrayBuffer();
+    } else if (data instanceof ArrayBuffer) {
+        buffer = data;
+    } else {
+        buffer = new Uint8Array(data).buffer;
+    }
 
     const encryptedContent = await window.crypto.subtle.encrypt(
         { name: "AES-GCM", iv },
         key,
-        dataToEncrypt
+        buffer
     );
 
-    // Retorna um objeto com os buffers originais (mais eficiente)
     return {
         iv: iv,
         encryptedData: new Uint8Array(encryptedContent)
@@ -42,15 +48,15 @@ export const encryptData = async (data) => {
 export const decryptData = async (encryptedObj) => {
     const key = await getEncryptionKey();
 
-    // Reconverte para os tipos corretos caso venham do IndexedDB
-    const iv = encryptedObj.iv instanceof Uint8Array ? encryptedObj.iv : new Uint8Array(encryptedObj.iv);
-    const data = encryptedObj.encryptedData instanceof Uint8Array ? encryptedObj.encryptedData : new Uint8Array(encryptedObj.encryptedData);
+    // Garante que são Uint8Arrays (importante para o IndexedDB)
+    const iv = encryptedObj.iv instanceof Uint8Array ? encryptedObj.iv : new Uint8Array(Object.values(encryptedObj.iv));
+    const data = encryptedObj.encryptedData instanceof Uint8Array ? encryptedObj.encryptedData : new Uint8Array(Object.values(encryptedObj.encryptedData));
 
     const decryptedContent = await window.crypto.subtle.decrypt(
         { name: "AES-GCM", iv },
         key,
-        data
+        data.buffer
     );
 
-    return new Uint8Array(decryptedContent);
+    return decryptedContent; // Retorna o ArrayBuffer puro
 };
