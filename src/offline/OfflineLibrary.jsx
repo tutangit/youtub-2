@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Trash2, Play, Pause, Library, Music, Download, AlertTriangle } from 'lucide-react';
+import { Upload, Trash2, Play, Pause, Library, Music, Download } from 'lucide-react';
 import { saveSong, getAllSongs, deleteSong } from './db';
+
+// Variável global para manter o Blob vivo e evitar ERR_FILE_NOT_FOUND
+let activeBlobUrl = null;
 
 const OfflineLibrary = () => {
     const [songs, setSongs] = useState([]);
     const [uploading, setUploading] = useState(false);
     const [downloading, setDownloading] = useState(false);
     const [playingId, setPlayingId] = useState(null);
-    const [audioUrl, setAudioUrl] = useState(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [ytUrl, setYtUrl] = useState('');
     const audioRef = useRef(null);
@@ -15,24 +17,13 @@ const OfflineLibrary = () => {
     useEffect(() => {
         loadSongs();
         return () => {
-            if (audioUrl && audioUrl.startsWith('blob:')) URL.revokeObjectURL(audioUrl);
+            if (activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
         };
     }, []);
 
     const loadSongs = async () => {
         const allSongs = await getAllSongs();
         setSongs(allSongs);
-    };
-
-    // Helper para converter Buffer em Data URL (Base64)
-    // Resolve problemas de "Range Not Satisfiable" e "00:00" em PWAs
-    const bufferToDataUrl = (buffer, type) => {
-        return new Promise((resolve) => {
-            const blob = new Blob([buffer], { type });
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result);
-            reader.readAsDataURL(blob);
-        });
     };
 
     const handleFileUpload = async (e) => {
@@ -49,7 +40,7 @@ const OfflineLibrary = () => {
                 createdAt: Date.now()
             });
             await loadSongs();
-            alert('Música adicionada à biblioteca!');
+            alert('Música salva com sucesso!');
         } catch (error) {
             console.error(error);
             alert('Erro no upload.');
@@ -74,82 +65,109 @@ const OfflineLibrary = () => {
 
             const blob = await response.blob();
             const buffer = await blob.arrayBuffer();
-
             await saveSong({
                 name: filename,
-                type: blob.type || 'audio/mpeg',
+                type: 'audio/mpeg',
                 size: blob.size,
                 data: buffer,
                 createdAt: Date.now()
             });
             await loadSongs();
             setYtUrl('');
-            alert('Download concluído com sucesso!');
+            alert('Música baixada!');
         } catch (error) {
             console.error(error);
-            alert('Erro ao baixar áudio.');
+            alert('Erro no download.');
         } finally {
             setDownloading(false);
         }
     };
 
-    const stopAudio = () => {
-        if (audioRef.current) {
-            audioRef.current.pause();
-            audioRef.current.src = "";
-            audioRef.current.load();
-        }
-        if (audioUrl && audioUrl.startsWith('blob:')) URL.revokeObjectURL(audioUrl);
-        setAudioUrl(null);
-        setPlayingId(null);
-        setIsPlaying(false);
-    };
-
     const playSong = async (song) => {
         try {
             if (playingId === song.id && audioRef.current) {
-                if (audioRef.current.paused) audioRef.current.play().catch(() => { });
-                else audioRef.current.pause();
+                if (audioRef.current.paused) {
+                    audioRef.current.play().then(() => setIsPlaying(true)).catch(() => { });
+                } else {
+                    audioRef.current.pause();
+                    setIsPlaying(false);
+                }
                 return;
             }
 
-            // Exibe carregando
             setPlayingId(song.id);
             setIsPlaying(false);
 
-            // Garante que temos um ArrayBuffer
+            // 1. Limpa o blob anterior ANTES de criar o novo
+            if (activeBlobUrl) {
+                URL.revokeObjectURL(activeBlobUrl);
+            }
+
+            // 2. Garante que temos um Buffer
             let buffer = song.data;
             if (buffer instanceof Blob) {
                 buffer = await buffer.arrayBuffer();
             }
 
-            // Converte para Data URL (Base64) - O MÉTODO MAIS ESTÁVEL
-            // Isso engana o navegador para não pedir "Range Requests"
-            const dataUrl = await bufferToDataUrl(buffer, song.type || 'audio/mpeg');
+            // 3. Cria um novo Blob limpo
+            const blob = new Blob([buffer], { type: song.type || 'audio/mpeg' });
+            activeBlobUrl = URL.createObjectURL(blob);
 
-            if (audioUrl && audioUrl.startsWith('blob:')) URL.revokeObjectURL(audioUrl);
-            setAudioUrl(dataUrl);
+            // 4. Configura o player manualmente para evitar problemas de sincronia do React
+            if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.src = activeBlobUrl;
+                audioRef.current.load(); // Força o navegador a re-escanear o arquivo
 
-            // O audio element vai detectar o src novo e os metadados virão juntos
+                // Só dá o play quando o navegador confirmar que os metadados (tempo) estão lá
+                const onLoadedMetadata = () => {
+                    audioRef.current.play()
+                        .then(() => setIsPlaying(true))
+                        .catch(e => console.warn("Auto-play blocked/failed", e));
+                    audioRef.current.removeEventListener('loadedmetadata', onLoadedMetadata);
+                };
+
+                audioRef.current.addEventListener('loadedmetadata', onLoadedMetadata);
+            }
+
+            if ('mediaSession' in navigator) {
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: song.name,
+                    artist: 'Offline',
+                    album: 'Premium Player'
+                });
+            }
         } catch (error) {
-            console.error('Erro ao tocar:', error);
-            alert('Erro ao processar arquivo para tocar.');
+            console.error('Erro no Play:', error);
+            alert('Erro ao processar áudio.');
             setPlayingId(null);
         }
     };
 
-    const handleDelete = async (id) => {
-        if (!confirm('Deseja excluir esta música?')) return;
-        if (playingId === id) stopAudio();
-        await deleteSong(id);
+    const clearLibrary = async () => {
+        if (!confirm('Deseja apagar todas as músicas?')) return;
+        if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.src = "";
+        }
+        if (activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
+        activeBlobUrl = null;
+
+        const all = await getAllSongs();
+        for (const s of all) await deleteSong(s.id);
+
+        setPlayingId(null);
+        setIsPlaying(false);
         await loadSongs();
     };
 
-    const clearLibrary = async () => {
-        if (!confirm('ATENÇÃO: Isso apagará TODA a biblioteca permanentemente. Continuar?')) return;
-        stopAudio();
-        const all = await getAllSongs();
-        for (const s of all) await deleteSong(s.id);
+    const handleDelete = async (id) => {
+        if (!confirm('Excluir?')) return;
+        if (playingId === id) {
+            if (audioRef.current) audioRef.current.pause();
+            setPlayingId(null);
+        }
+        await deleteSong(id);
         await loadSongs();
     };
 
@@ -166,13 +184,11 @@ const OfflineLibrary = () => {
                     <div className="file-input-wrapper">
                         <button className="btn-upload" disabled={uploading || downloading}>
                             {uploading ? <span className="spinner-small"></span> : <Upload size={20} />}
-                            <span>{uploading ? 'Processando...' : 'Adicionar Local'}</span>
+                            <span>{uploading ? 'Salvando...' : 'Adicionar Local'}</span>
                         </button>
                         <input type="file" accept="audio/*" onChange={handleFileUpload} />
                     </div>
-                    <button className="btn-clear" onClick={clearLibrary} title="Esvaziar Biblioteca">
-                        <Trash2 size={20} />
-                    </button>
+                    <button className="btn-clear" onClick={clearLibrary} title="Limpar Tudo"><Trash2 size={20} /></button>
                 </div>
 
                 <div className="divider-or">OU</div>
@@ -181,7 +197,7 @@ const OfflineLibrary = () => {
                     <div className="input-group">
                         <input
                             type="text"
-                            placeholder="Cole o link do YouTube aqui..."
+                            placeholder="Link do YouTube..."
                             value={ytUrl}
                             onChange={(e) => setYtUrl(e.target.value)}
                             disabled={downloading}
@@ -194,29 +210,26 @@ const OfflineLibrary = () => {
             </div>
 
             <div className="library-section">
-                <h3 className="section-title"><Library size={18} /> Sua Música Offline</h3>
+                <h3 className="section-title"><Library size={18} /> Sua Biblioteca Offline</h3>
                 <div className="scrollable-list">
                     {songs.map(song => (
                         <div key={song.id} className={`list-item ${playingId === song.id ? 'active' : ''}`}>
                             <div className="track-main-info" onClick={() => playSong(song)}>
                                 <div className="play-icon-wrap">
                                     {(playingId === song.id && isPlaying) ? <Pause size={18} /> : <Play size={18} />}
-                                    {playingId === song.id && !isPlaying && <div className="spinner-extra-small"></div>}
                                 </div>
                                 <div className="track-details">
                                     <span className="track-name">{song.name}</span>
-                                    <span className="track-meta">{formatSize(song.size)} • PWA Stable</span>
+                                    <span className="track-meta">{formatSize(song.size)} • Estável</span>
                                 </div>
                             </div>
-                            <button onClick={() => handleDelete(song.id)} className="icon-button delete" title="Remover">
-                                <Trash2 size={16} />
-                            </button>
+                            <button onClick={() => handleDelete(song.id)} className="icon-button delete"><Trash2 size={16} /></button>
                         </div>
                     ))}
                     {songs.length === 0 && (
                         <div className="empty-state">
                             <Music size={40} />
-                            <p>Biblioteca vazia</p>
+                            <p>Biblioteca vazia.</p>
                         </div>
                     )}
                 </div>
@@ -225,25 +238,27 @@ const OfflineLibrary = () => {
             <div className={`mini-player glass ${playingId ? 'visible' : 'hidden'}`}>
                 <div className="player-info">
                     <Music size={16} className={isPlaying ? "spinning" : ""} />
-                    <span>{isPlaying ? 'Reproduzindo' : 'Carregando...'}</span>
+                    <span>{isPlaying ? 'Tocando Agora' : 'Pausado'}</span>
                 </div>
                 <audio
                     ref={audioRef}
-                    src={audioUrl}
                     controls
-                    autoPlay
+                    preload="metadata"
+                    className="web-audio-player"
                     onPlay={() => setIsPlaying(true)}
                     onPause={() => setIsPlaying(false)}
-                    onEnded={() => stopAudio()}
+                    onEnded={() => {
+                        setPlayingId(null);
+                        setIsPlaying(false);
+                    }}
                     onError={(e) => {
-                        console.error("Audio internal error:", e);
-                        // Se falhar mesmo com Base64, pode ser o codec do arquivo
-                        if (playingId) {
-                            alert("Não foi possível reproduzir este arquivo. O formato pode não ser compatível com seu navegador.");
-                            stopAudio();
+                        console.error("Audio error:", e);
+                        // Tenta recuperar se for erro de Range (network)
+                        if (playingId && audioRef.current && audioRef.current.error && audioRef.current.error.code === 2) {
+                            console.log("Tentando recuperar erro de rede/range...");
+                            audioRef.current.load();
                         }
                     }}
-                    className="web-audio-player"
                 />
             </div>
         </div>
